@@ -167,11 +167,14 @@ subroutine tropopause_diags_code(nlayers,                    &
         ! if the 2km-separated level would lie above heightcut_top, this
         ! candidate k is rejected outright (matching UM leaving tlev
         ! unset) rather than computing lapse_rate_above from a level
-        ! above the search band.
+        ! above the search band. Likewise, if the column runs out before
+        ! either bound is reached, the do loop simply ends without ever
+        ! computing lapse_rate_above - UM has no "use whatever levels are
+        ! left" fallback, so neither does this port.
         do kk = k + 1, nlayers
           if (height_wth(map_wth(1) + kk) > heightcut_top) exit
           dz = height_wth(map_wth(1) + kk) - height_wth(map_wth(1) + k)
-          if (dz >= dz_trop .or. kk == nlayers) then
+          if (dz >= dz_trop) then
             lapse_rate_above = (t_wth(k) - t_wth(kk)) / dz
             if (lapse_rate_above < lapse_trop) then
               lapse_rate_trop_level = k

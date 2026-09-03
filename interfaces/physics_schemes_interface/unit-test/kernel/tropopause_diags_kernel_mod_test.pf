@@ -22,7 +22,8 @@ module tropopause_diags_kernel_mod_test
             test_trop_temp_only, &
             test_trop_press_without_icao, &
             test_no_level_found_gives_rmdi, &
-            test_candidate_rejected_above_heightcut
+            test_candidate_rejected_above_heightcut, &
+            test_candidate_rejected_when_column_runs_out
 
   @TestCase
   type, extends(TestCase), public :: tropopause_diags_test_type
@@ -38,6 +39,7 @@ module tropopause_diags_kernel_mod_test
     procedure test_trop_press_without_icao
     procedure test_no_level_found_gives_rmdi
     procedure test_candidate_rejected_above_heightcut
+    procedure test_candidate_rejected_when_column_runs_out
   end type tropopause_diags_test_type
 
   ! nlayers=10, 2 km level spacing; map_wth/map_2d only ever have their
@@ -126,33 +128,63 @@ contains
 
   ! Synthetic (non-physical) profile isolating the heightcut_top bound on
   ! the inner 2km-above search (ported from UM's k2km loop in
-  ! pws_tropoht_mod.F90). exner_in_wth is held at 1.0
-  ! throughout so t_wth == theta, for direct control over the temperature
-  ! profile. Level 8 (height 31500 m) satisfies the WMO candidate gate
-  ! (in-band, sub-threshold lapse rate), but the only levels above it
-  ! within the column are 31700 m (dz = 200 m, short of the 2 km
-  ! requirement) and 32300 m (beyond heightcut_top = 32000 m). Without the
-  ! heightcut_top bound in the inner loop, reaching the top of the column
-  ! (kk == nlayers) would force a lapse_rate_above evaluation using the
-  ! 32300 m level and (with these temperatures) spuriously accept level 8
-  ! as the tropopause; with the bound, the candidate is correctly rejected
-  ! and no tropopause level is found.
+  ! pws_tropoht_mod.F90). exner_in_wth is held at 1.0 throughout so
+  ! t_wth == theta, for direct control over the temperature profile.
+  ! Level 8 (height 31000 m) satisfies the WMO candidate gate (in-band,
+  ! sub-threshold lapse rate). The next level (32200 m, dz = 1200 m) is
+  ! itself beyond heightcut_top (32000 m), and the level after that
+  ! (33200 m, dz = 2200 m) is where the 2km-above requirement would
+  ! genuinely be satisfied - i.e. this profile has a real >=2km-separated
+  ! level, unlike the removed kk == nlayers fallback's use of whatever
+  ! level the column happened to end on. Without the heightcut_top bound,
+  ! the search would reach that 33200 m level and (with these
+  ! temperatures) spuriously accept level 8 as the tropopause; with the
+  ! bound, the search is stopped at 32200 m and the candidate is
+  ! correctly rejected, with no tropopause level found.
   subroutine set_heightcut_boundary_profile( this )
     implicit none
     class(tropopause_diags_test_type), intent(inout) :: this
 
     this%height_wth = (/ 2000.0_r_def,  6000.0_r_def,  12000.0_r_def, &
                           18000.0_r_def, 22000.0_r_def, 26000.0_r_def, &
-                          29000.0_r_def, 31500.0_r_def, 31700.0_r_def, &
-                          32300.0_r_def /)
+                          29000.0_r_def, 31000.0_r_def, 32200.0_r_def, &
+                          33200.0_r_def /)
     this%exner_in_wth = (/ 1.0_r_def, 1.0_r_def, 1.0_r_def, 1.0_r_def, &
                             1.0_r_def, 1.0_r_def, 1.0_r_def, 1.0_r_def, &
                             1.0_r_def, 1.0_r_def /)
     this%theta = (/ 300.0_r_def, 280.0_r_def, 260.0_r_def, 252.0_r_def, &
                      248.0_r_def, 246.0_r_def, 243.5_r_def, 240.0_r_def, &
-                     239.5_r_def, 239.0_r_def /)
+                     238.5_r_def, 237.0_r_def /)
 
   end subroutine set_heightcut_boundary_profile
+
+  ! Synthetic profile isolating the case where the column runs out before
+  ! the 2km-above check is satisfied, without ever crossing heightcut_top
+  ! (32000 m). UM's k2km loop (pws_tropoht_mod.F90) has no "use whatever
+  ! is left" fallback: if the DO loop reaches model_levels without dz
+  ! reaching 2000 m, Lapse_2km is simply never computed and tlev stays
+  ! unset. Level 7 (height 29000 m) satisfies the WMO candidate gate, but
+  ! the remaining levels in the column (29800/30400/30900 m) only reach a
+  ! dz of 1900 m by the top of the column - short of 2000 m - so this
+  ! candidate must be rejected. Level 8 is given a temperature at/above
+  ! tempcut so it cannot become a second candidate once level 7 is
+  ! rejected and the outer search continues.
+  subroutine set_column_runs_out_profile( this )
+    implicit none
+    class(tropopause_diags_test_type), intent(inout) :: this
+
+    this%height_wth = (/ 2000.0_r_def,  6000.0_r_def,  12000.0_r_def, &
+                          18000.0_r_def, 22000.0_r_def, 26000.0_r_def, &
+                          29000.0_r_def, 29800.0_r_def, 30400.0_r_def, &
+                          30900.0_r_def /)
+    this%exner_in_wth = (/ 1.0_r_def, 1.0_r_def, 1.0_r_def, 1.0_r_def, &
+                            1.0_r_def, 1.0_r_def, 1.0_r_def, 1.0_r_def, &
+                            1.0_r_def, 1.0_r_def /)
+    this%theta = (/ 300.0_r_def, 280.0_r_def, 260.0_r_def, 252.0_r_def, &
+                     248.0_r_def, 243.5_r_def, 240.0_r_def, 245.0_r_def, &
+                     244.0_r_def, 243.0_r_def /)
+
+  end subroutine set_column_runs_out_profile
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! All four fields active: checks trop_ht/trop_temp/trop_press against
@@ -339,5 +371,39 @@ contains
     deallocate( temp_data, press_data, icao_data )
 
   end subroutine test_candidate_rejected_above_heightcut
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! Regression test: UM has no fallback for running out of column before
+  ! the 2km-above check is satisfied (pws_tropoht_mod.F90's k2km loop ends
+  ! without computing Lapse_2km in that case). A candidate whose column
+  ! runs out at dz = 1900 m (short of 2000 m) must be rejected (rmdi
+  ! output), not accepted using a lapse rate computed from that short dz.
+  @test
+  subroutine test_candidate_rejected_when_column_runs_out( this )
+    implicit none
+    class(tropopause_diags_test_type), intent(inout) :: this
+    real(kind=r_def), allocatable, target :: temp_data(:), press_data(:), &
+                                              icao_data(:)
+    real(kind=r_def), pointer :: trop_temp(:), trop_press(:), trop_icao_ht(:)
+
+    call set_column_runs_out_profile( this )
+    allocate( temp_data(undf_2d), press_data(undf_2d), icao_data(undf_2d) )
+    trop_temp    => temp_data
+    trop_press   => press_data
+    trop_icao_ht => icao_data
+
+    call tropopause_diags_code( nlayers, this%theta, this%exner_in_wth, &
+         this%height_wth, this%trop_ht, trop_temp, trop_press, &
+         trop_icao_ht, p_zero, kappa, g_over_r, &
+         ndf_wth, undf_wth, map_wth, ndf_2d, undf_2d, map_2d )
+
+    @assertEqual( rmdi, this%trop_ht(1), tol_height )
+    @assertEqual( rmdi, trop_temp(1), tol_temp )
+    @assertEqual( rmdi, trop_press(1), tol_press )
+    @assertEqual( rmdi, trop_icao_ht(1), tol_icao )
+
+    deallocate( temp_data, press_data, icao_data )
+
+  end subroutine test_candidate_rejected_when_column_runs_out
 
 end module tropopause_diags_kernel_mod_test
