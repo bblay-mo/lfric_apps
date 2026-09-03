@@ -14,7 +14,7 @@ use argument_mod,      only : arg_type,          &
                               CELL_COLUMN,       &
                               ANY_DISCONTINUOUS_SPACE_1
 use fs_continuity_mod, only : Wtheta
-use constants_mod,     only : r_def, i_def, l_def, rmdi
+use constants_mod,     only : r_def, i_def, rmdi
 use kernel_mod,        only : kernel_type
 
 implicit none
@@ -120,7 +120,6 @@ subroutine tropopause_diags_code(nlayers,                    &
   ! Local variables
   integer(i_def) :: k, kk
   integer(i_def) :: lapse_rate_trop_level
-  logical(l_def) :: bounded_by_heightcut
   real(r_def) :: t_wth(nlayers), lapse_rate(nlayers), lapse_rate_above, dz
   real(r_def) :: lapseupr, lapselwr, delta_lapse
   real(r_def) :: press_at_k
@@ -169,24 +168,18 @@ subroutine tropopause_diags_code(nlayers,                    &
         ! candidate k is rejected outright (matching UM leaving tlev
         ! unset) rather than computing lapse_rate_above from a level
         ! above the search band.
-        bounded_by_heightcut = .false.
         do kk = k + 1, nlayers
-          if (height_wth(map_wth(1) + kk) > heightcut_top) then
-            bounded_by_heightcut = .true.
-            exit
-          end if
+          if (height_wth(map_wth(1) + kk) > heightcut_top) exit
           dz = height_wth(map_wth(1) + kk) - height_wth(map_wth(1) + k)
           if (dz >= dz_trop .or. kk == nlayers) then
             lapse_rate_above = (t_wth(k) - t_wth(kk)) / dz
+            if (lapse_rate_above < lapse_trop) then
+              lapse_rate_trop_level = k
+            end if
             exit
           end if
         end do
-        if (.not. bounded_by_heightcut) then
-          if (lapse_rate_above < lapse_trop) then
-            lapse_rate_trop_level = k
-            exit
-          end if
-        end if
+        if (lapse_rate_trop_level > 0) exit
       end if
     end if
   end do
