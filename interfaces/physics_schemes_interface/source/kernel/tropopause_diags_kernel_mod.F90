@@ -222,12 +222,17 @@ subroutine tropopause_diags_code(nlayers,                    &
         - lapselwr * (trop_ht(map_2d(1)) - height_wth(map_wth(1) + k))
     end if
 
-    if (.not. associated(trop_press, empty_real_data)) then
-      if (abs(lapselwr) < vsmall) then
-        if (lapselwr >= 0.0_r_def) lapselwr = vsmall
-        if (lapselwr <  0.0_r_def) lapselwr = -vsmall
-      end if
+    ! Clamp lapselwr away from zero before it is used as a divisor below,
+    ! unconditionally rather than nested inside the trop_press activation
+    ! guard - matching UM's clamp (pws_tropoht_mod.F90, the ABS(lapselwr)
+    ! < vsmall check following the tropopause-temperature calculation),
+    ! which is likewise unconditional.
+    if (abs(lapselwr) < vsmall) then
+      if (lapselwr >= 0.0_r_def) lapselwr = vsmall
+      if (lapselwr <  0.0_r_def) lapselwr = -vsmall
+    end if
 
+    if (.not. associated(trop_press, empty_real_data)) then
       ! Pressure at the tropopause is derived from the hydrostatic equation.
       press_at_k = p_zero * exner_in_wth(map_wth(1) + k)**(1.0_r_def / kappa)
       trop_press(map_2d(1)) = press_at_k &
