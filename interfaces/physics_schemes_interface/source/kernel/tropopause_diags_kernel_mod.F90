@@ -14,7 +14,7 @@ use argument_mod,      only : arg_type,          &
                               CELL_COLUMN,       &
                               ANY_DISCONTINUOUS_SPACE_1
 use fs_continuity_mod, only : Wtheta
-use constants_mod,     only : r_def, i_def
+use constants_mod,     only : r_def, i_def, rmdi
 use kernel_mod,        only : kernel_type
 
 implicit none
@@ -119,8 +119,7 @@ subroutine tropopause_diags_code(nlayers,                    &
 
   ! Local variables
   integer(i_def) :: k, kk
-  integer(i_def) :: lapse_rate_trop_level, cold_point_trop_level
-  real(r_def) :: exner_max, exner_min
+  integer(i_def) :: lapse_rate_trop_level
   real(r_def) :: t_wth(nlayers), lapse_rate(nlayers), lapse_rate_above, dz
   real(r_def) :: lapseupr, lapselwr, delta_lapse
   real(r_def) :: press_at_k
@@ -129,25 +128,20 @@ subroutine tropopause_diags_code(nlayers,                    &
   real(r_def), parameter :: lapse_trop = 0.002_r_def   ! K/m
   real(r_def), parameter :: dz_trop = 2000.0_r_def     ! m
 
-  ! Parameters to limit tropopause to given pressure range
+  ! Height/temperature band used to gate candidate tropopause levels,
+  ! ported verbatim from UM's pws_diags_mod.F90 (heightcut_bot,
+  ! heightcut_top, tempcut) and pws_tropoht_mod.F90 (the search using them),
+  ! rather than reusing locate_tropopause_kernel_mod's Exner-band criterion,
+  ! to keep this diagnostic's output as close to the UM reference as
+  ! reasonably possible.
   ! (could be set in planet namelist for different planets in future)
-  ! p_min_trop is the ISA-equivalent pressure of 32 km, matching UM's
-  ! heightcut_top (pws_diags_mod.F90), raised from 22000 m to 32000 m
-  ! (commit e1703a93e, "Trop max height update") after cases where the WMO
-  ! tropopause criteria were not met below the old, lower bound. The former
-  ! 5000 Pa here corresponded to only ~20 km, tighter even than UM's old
-  ! bound, so is liable to the same issue.
-  real(r_def), parameter :: p_min_trop = 868.0_r_def   ! Pa
-  real(r_def), parameter :: p_max_trop = 50000.0_r_def ! Pa
+  real(r_def), parameter :: heightcut_bot = 4500.0_r_def  ! m
+  real(r_def), parameter :: heightcut_top = 32000.0_r_def ! m
+  real(r_def), parameter :: tempcut = 243.0_r_def         ! K
 
   real(r_def), parameter :: vsmall = 1.0e-6_r_def
 
-  exner_min = (p_min_trop / p_zero)**kappa
-  exner_max = (p_max_trop / p_zero)**kappa
   lapse_rate_trop_level = 0
-  ! Fallback level must leave room for the k-1 and k+2 accesses used by the
-  ! interpolation below; 3 is the lowest level the search loop considers.
-  cold_point_trop_level = 3
   t_wth(1) = theta(map_wth(1) + 1) * exner_in_wth(map_wth(1) + 1)
   do k = 2, nlayers
     t_wth(k) = theta(map_wth(1) + k) * exner_in_wth(map_wth(1) + k)
@@ -156,18 +150,15 @@ subroutine tropopause_diags_code(nlayers,                    &
                      height_wth(map_wth(1) + k - 1))
   end do
 
-  ! Locate the WMO-definition tropopause model level, following the same
-  ! pressure-band search as locate_tropopause_kernel_mod. The upper bound
+  ! Locate the WMO-definition tropopause model level, following UM's
+  ! height + temperature band search (pws_tropoht_mod.F90) rather than
+  ! locate_tropopause_kernel_mod's Exner-band criterion. The upper bound
   ! is nlayers - 2 (rather than nlayers - 1) so the k+2 level used by the
   ! interpolation below always stays within the column.
   do k = 3, nlayers - 2
-    if (exner_in_wth(map_wth(1) + k - 1) > exner_min .and. &
-        exner_in_wth(map_wth(1) + k)   < exner_max) then
-      if (t_wth(k) < t_wth(cold_point_trop_level)) then
-        ! Set the coldest level to use as a fallback if the lapse-rate
-        ! criteria are not met.
-        cold_point_trop_level = k
-      end if
+    if (height_wth(map_wth(1) + k) > heightcut_bot .and. &
+        height_wth(map_wth(1) + k) < heightcut_top .and. &
+        t_wth(k) < tempcut) then
       if (lapse_rate(k)   < lapse_trop .and. &
           lapse_rate(k - 1) > 0.0_r_def) then
         ! Lapse rate has dropped below the threshold. If this is maintained
@@ -190,56 +181,69 @@ subroutine tropopause_diags_code(nlayers,                    &
 
   if (lapse_rate_trop_level > 0) then
     k = lapse_rate_trop_level
-  else
-    k = cold_point_trop_level
-  end if
 
-  ! Lapse rate for the interval below (k-1 ~ k) and above (k+1 ~ k+2) the
-  ! tropopause level, used to interpolate height/temperature/pressure at the
-  ! crossing point between the two lapse-rate lines.
-  lapselwr = lapse_rate(k)
-  lapseupr = (t_wth(k + 1) - t_wth(k + 2)) &
-           / (height_wth(map_wth(1) + k + 2) - height_wth(map_wth(1) + k + 1))
+    ! Lapse rate for the interval below (k-1 ~ k) and above (k+1 ~ k+2) the
+    ! tropopause level, used to interpolate height/temperature/pressure at
+    ! the crossing point between the two lapse-rate lines.
+    lapselwr = lapse_rate(k)
+    lapseupr = (t_wth(k + 1) - t_wth(k + 2)) &
+             / (height_wth(map_wth(1) + k + 2) - height_wth(map_wth(1) + k + 1))
 
-  delta_lapse = lapselwr - lapseupr
-  if (abs(delta_lapse) < vsmall) then
-    if (delta_lapse >= 0.0_r_def) delta_lapse = vsmall
-    if (delta_lapse <  0.0_r_def) delta_lapse = -vsmall
-  end if
-
-  trop_ht(map_2d(1)) =                                                     &
-    ((t_wth(k)     + (lapselwr * height_wth(map_wth(1) + k)))   -          &
-     (t_wth(k + 1) + (lapseupr * height_wth(map_wth(1) + k + 1)))) / delta_lapse
-
-  if (trop_ht(map_2d(1)) < height_wth(map_wth(1) + k)) then
-    ! ensure trop height doesn't undershoot
-    trop_ht(map_2d(1)) = height_wth(map_wth(1) + k)
-  end if
-  if (trop_ht(map_2d(1)) > height_wth(map_wth(1) + k + 1)) then
-    ! or overshoot
-    trop_ht(map_2d(1)) = height_wth(map_wth(1) + k + 1)
-  end if
-
-  if (.not. associated(trop_temp, empty_real_data)) then
-    trop_temp(map_2d(1)) = t_wth(k) &
-      - lapselwr * (trop_ht(map_2d(1)) - height_wth(map_wth(1) + k))
-  end if
-
-  if (.not. associated(trop_press, empty_real_data)) then
-    if (abs(lapselwr) < vsmall) then
-      if (lapselwr >= 0.0_r_def) lapselwr = vsmall
-      if (lapselwr <  0.0_r_def) lapselwr = -vsmall
+    delta_lapse = lapselwr - lapseupr
+    if (abs(delta_lapse) < vsmall) then
+      if (delta_lapse >= 0.0_r_def) delta_lapse = vsmall
+      if (delta_lapse <  0.0_r_def) delta_lapse = -vsmall
     end if
 
-    ! Pressure at the tropopause is derived from the hydrostatic equation.
-    press_at_k = p_zero * exner_in_wth(map_wth(1) + k)**(1.0_r_def / kappa)
-    trop_press(map_2d(1)) = press_at_k &
-      * (trop_temp(map_2d(1)) / t_wth(k))**(g_over_r / lapselwr)
+    trop_ht(map_2d(1)) =                                                   &
+      ((t_wth(k)     + (lapselwr * height_wth(map_wth(1) + k)))   -        &
+       (t_wth(k + 1) + (lapseupr * height_wth(map_wth(1) + k + 1)))) &
+      / delta_lapse
+
+    if (trop_ht(map_2d(1)) < height_wth(map_wth(1) + k)) then
+      ! ensure trop height doesn't undershoot
+      trop_ht(map_2d(1)) = height_wth(map_wth(1) + k)
+    end if
+    if (trop_ht(map_2d(1)) > height_wth(map_wth(1) + k + 1)) then
+      ! or overshoot
+      trop_ht(map_2d(1)) = height_wth(map_wth(1) + k + 1)
+    end if
+
+    if (.not. associated(trop_temp, empty_real_data)) then
+      trop_temp(map_2d(1)) = t_wth(k) &
+        - lapselwr * (trop_ht(map_2d(1)) - height_wth(map_wth(1) + k))
+    end if
+
+    if (.not. associated(trop_press, empty_real_data)) then
+      if (abs(lapselwr) < vsmall) then
+        if (lapselwr >= 0.0_r_def) lapselwr = vsmall
+        if (lapselwr <  0.0_r_def) lapselwr = -vsmall
+      end if
+
+      ! Pressure at the tropopause is derived from the hydrostatic equation.
+      press_at_k = p_zero * exner_in_wth(map_wth(1) + k)**(1.0_r_def / kappa)
+      trop_press(map_2d(1)) = press_at_k &
+        * (trop_temp(map_2d(1)) / t_wth(k))**(g_over_r / lapselwr)
+    end if
+  else
+    ! No level in this column satisfies the WMO tropopause criteria (height
+    ! + temperature band and sustained lapse-rate crossing). Matches UM's
+    ! pws_tropoht, which leaves the diagnostic as missing data (tlev stays
+    ! imdi) for that column rather than substituting a fallback level.
+    trop_ht(map_2d(1)) = rmdi
+    if (.not. associated(trop_temp, empty_real_data)) then
+      trop_temp(map_2d(1)) = rmdi
+    end if
+    if (.not. associated(trop_press, empty_real_data)) then
+      trop_press(map_2d(1)) = rmdi
+    end if
   end if
 
   ! Reuses the shared ICAO standard-atmosphere conversion rather than
   ! duplicating it - see the @details note on icao_heights_kernel_code for
   ! why a kernel calling another module's procedure is acceptable here.
+  ! icao_heights_kernel_code itself propagates trop_press == rmdi through
+  ! to trop_icao_ht, so the missing-data case needs no separate handling.
   if (.not. associated(trop_icao_ht, empty_real_data)) then
     call icao_heights_kernel_code(nlayers, trop_icao_ht, trop_press, &
                                   g_over_r, ndf_2d, undf_2d, map_2d)

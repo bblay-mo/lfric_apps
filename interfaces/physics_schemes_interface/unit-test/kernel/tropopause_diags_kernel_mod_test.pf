@@ -9,7 +9,7 @@
 module tropopause_diags_kernel_mod_test
 
   use funit
-  use constants_mod,               only: i_def, r_def
+  use constants_mod,               only: i_def, r_def, rmdi
   use empty_data_mod,              only: empty_real_data
   use icao_heights_kernel_mod,     only: icao_heights_kernel_code
   use tropopause_diags_kernel_mod, only: tropopause_diags_code
@@ -21,7 +21,7 @@ module tropopause_diags_kernel_mod_test
             test_trop_ht_always_computed, &
             test_trop_temp_only, &
             test_trop_press_without_icao, &
-            test_fallback_cold_point_and_boundary
+            test_no_level_found_gives_rmdi
 
   @TestCase
   type, extends(TestCase), public :: tropopause_diags_test_type
@@ -35,7 +35,7 @@ module tropopause_diags_kernel_mod_test
     procedure test_trop_ht_always_computed
     procedure test_trop_temp_only
     procedure test_trop_press_without_icao
-    procedure test_fallback_cold_point_and_boundary
+    procedure test_no_level_found_gives_rmdi
   end type tropopause_diags_test_type
 
   ! nlayers=10, 2 km level spacing; map_wth/map_2d only ever have their
@@ -103,13 +103,11 @@ contains
   end subroutine set_baseline_profile
 
   ! A monotonically decreasing profile (lapse rate always above the WMO
-  ! threshold): no level in the search range satisfies the sustained
-  ! lapse-rate criterion, so the cold-point fallback is used, landing at
-  ! k = nlayers - 2 (=8) - the tightest level the search loop permits,
-  ! exercising the k+2 = nlayers boundary. theta/exner give t_wth close to
-  ! 300, 287, 274, 261, 248, 235, 222, 209, 190, 170 K (the last interval
-  ! steeper, so lapselwr/lapseupr stay well apart at the fallback level).
-  subroutine set_fallback_profile( this )
+  ! threshold, ~0.0065-0.01 K/m): no level in the search range satisfies the
+  ! sustained lapse-rate criterion, so no tropopause level is ever found.
+  ! theta/exner give t_wth close to 300, 287, 274, 261, 248, 235, 222, 209,
+  ! 190, 170 K.
+  subroutine set_no_level_found_profile( this )
     implicit none
     class(tropopause_diags_test_type), intent(inout) :: this
     integer(kind=i_def) :: k
@@ -122,7 +120,7 @@ contains
                      427.59_r_def, 470.0_r_def,  528.57_r_def, 614.71_r_def, &
                      730.77_r_def, 850.0_r_def /)
 
-  end subroutine set_fallback_profile
+  end subroutine set_no_level_found_profile
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! All four fields active: checks trop_ht/trop_temp/trop_press against
@@ -243,32 +241,37 @@ contains
   end subroutine test_trop_press_without_icao
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! No level satisfies the WMO criterion: the cold-point fallback at
-  ! k = nlayers - 2 is used, exercising both the fallback path and the
-  ! tightest safe boundary for the k+2 interpolation access.
+  ! No level satisfies the WMO criterion: matching UM's pws_tropoht (tlev
+  ! stays imdi), all active outputs are left as rmdi rather than a
+  ! fallback value. trop_icao_ht is active too, locking in that
+  ! icao_heights_kernel_code propagates trop_press == rmdi through rather
+  ! than needing separate handling in this kernel.
   @test
-  subroutine test_fallback_cold_point_and_boundary( this )
+  subroutine test_no_level_found_gives_rmdi( this )
     implicit none
     class(tropopause_diags_test_type), intent(inout) :: this
-    real(kind=r_def), allocatable, target :: temp_data(:), press_data(:)
+    real(kind=r_def), allocatable, target :: temp_data(:), press_data(:), &
+                                              icao_data(:)
     real(kind=r_def), pointer :: trop_temp(:), trop_press(:), trop_icao_ht(:)
 
-    call set_fallback_profile( this )
-    allocate( temp_data(undf_2d), press_data(undf_2d) )
+    call set_no_level_found_profile( this )
+    allocate( temp_data(undf_2d), press_data(undf_2d), icao_data(undf_2d) )
     trop_temp    => temp_data
     trop_press   => press_data
-    trop_icao_ht => empty_real_data
+    trop_icao_ht => icao_data
 
     call tropopause_diags_code( nlayers, this%theta, this%exner_in_wth, &
          this%height_wth, this%trop_ht, trop_temp, trop_press, &
          trop_icao_ht, p_zero, kappa, g_over_r, &
          ndf_wth, undf_wth, map_wth, ndf_2d, undf_2d, map_2d )
 
-    @assertEqual( 16285.34_r_def, this%trop_ht(1), tol_height )
-    @assertEqual( 207.147_r_def, trop_temp(1), tol_temp )
+    @assertEqual( rmdi, this%trop_ht(1), tol_height )
+    @assertEqual( rmdi, trop_temp(1), tol_temp )
+    @assertEqual( rmdi, trop_press(1), tol_press )
+    @assertEqual( rmdi, trop_icao_ht(1), tol_icao )
 
-    deallocate( temp_data, press_data )
+    deallocate( temp_data, press_data, icao_data )
 
-  end subroutine test_fallback_cold_point_and_boundary
+  end subroutine test_no_level_found_gives_rmdi
 
 end module tropopause_diags_kernel_mod_test
