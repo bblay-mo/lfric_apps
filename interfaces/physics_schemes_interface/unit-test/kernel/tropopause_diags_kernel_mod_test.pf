@@ -21,7 +21,8 @@ module tropopause_diags_kernel_mod_test
             test_trop_ht_always_computed, &
             test_trop_temp_only, &
             test_trop_press_without_icao, &
-            test_no_level_found_gives_rmdi
+            test_no_level_found_gives_rmdi, &
+            test_candidate_rejected_above_heightcut
 
   @TestCase
   type, extends(TestCase), public :: tropopause_diags_test_type
@@ -36,6 +37,7 @@ module tropopause_diags_kernel_mod_test
     procedure test_trop_temp_only
     procedure test_trop_press_without_icao
     procedure test_no_level_found_gives_rmdi
+    procedure test_candidate_rejected_above_heightcut
   end type tropopause_diags_test_type
 
   ! nlayers=10, 2 km level spacing; map_wth/map_2d only ever have their
@@ -121,6 +123,36 @@ contains
                      730.77_r_def, 850.0_r_def /)
 
   end subroutine set_no_level_found_profile
+
+  ! Synthetic (non-physical) profile isolating the heightcut_top bound on
+  ! the inner 2km-above search (ported from UM's k2km loop in
+  ! pws_tropoht_mod.F90). exner_in_wth is held at 1.0
+  ! throughout so t_wth == theta, for direct control over the temperature
+  ! profile. Level 8 (height 31500 m) satisfies the WMO candidate gate
+  ! (in-band, sub-threshold lapse rate), but the only levels above it
+  ! within the column are 31700 m (dz = 200 m, short of the 2 km
+  ! requirement) and 32300 m (beyond heightcut_top = 32000 m). Without the
+  ! heightcut_top bound in the inner loop, reaching the top of the column
+  ! (kk == nlayers) would force a lapse_rate_above evaluation using the
+  ! 32300 m level and (with these temperatures) spuriously accept level 8
+  ! as the tropopause; with the bound, the candidate is correctly rejected
+  ! and no tropopause level is found.
+  subroutine set_heightcut_boundary_profile( this )
+    implicit none
+    class(tropopause_diags_test_type), intent(inout) :: this
+
+    this%height_wth = (/ 2000.0_r_def,  6000.0_r_def,  12000.0_r_def, &
+                          18000.0_r_def, 22000.0_r_def, 26000.0_r_def, &
+                          29000.0_r_def, 31500.0_r_def, 31700.0_r_def, &
+                          32300.0_r_def /)
+    this%exner_in_wth = (/ 1.0_r_def, 1.0_r_def, 1.0_r_def, 1.0_r_def, &
+                            1.0_r_def, 1.0_r_def, 1.0_r_def, 1.0_r_def, &
+                            1.0_r_def, 1.0_r_def /)
+    this%theta = (/ 300.0_r_def, 280.0_r_def, 260.0_r_def, 252.0_r_def, &
+                     248.0_r_def, 246.0_r_def, 243.5_r_def, 240.0_r_def, &
+                     239.5_r_def, 239.0_r_def /)
+
+  end subroutine set_heightcut_boundary_profile
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! All four fields active: checks trop_ht/trop_temp/trop_press against
@@ -273,5 +305,39 @@ contains
     deallocate( temp_data, press_data, icao_data )
 
   end subroutine test_no_level_found_gives_rmdi
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! Regression test for the heightcut_top bound in the inner 2km-above
+  ! search: a candidate level whose only "2km above" levels lie beyond
+  ! heightcut_top must be rejected (rmdi output), matching UM's k2km loop
+  ! in pws_tropoht_mod.F90, rather than accepted using a lapse rate
+  ! computed from a level above the search band.
+  @test
+  subroutine test_candidate_rejected_above_heightcut( this )
+    implicit none
+    class(tropopause_diags_test_type), intent(inout) :: this
+    real(kind=r_def), allocatable, target :: temp_data(:), press_data(:), &
+                                              icao_data(:)
+    real(kind=r_def), pointer :: trop_temp(:), trop_press(:), trop_icao_ht(:)
+
+    call set_heightcut_boundary_profile( this )
+    allocate( temp_data(undf_2d), press_data(undf_2d), icao_data(undf_2d) )
+    trop_temp    => temp_data
+    trop_press   => press_data
+    trop_icao_ht => icao_data
+
+    call tropopause_diags_code( nlayers, this%theta, this%exner_in_wth, &
+         this%height_wth, this%trop_ht, trop_temp, trop_press, &
+         trop_icao_ht, p_zero, kappa, g_over_r, &
+         ndf_wth, undf_wth, map_wth, ndf_2d, undf_2d, map_2d )
+
+    @assertEqual( rmdi, this%trop_ht(1), tol_height )
+    @assertEqual( rmdi, trop_temp(1), tol_temp )
+    @assertEqual( rmdi, trop_press(1), tol_press )
+    @assertEqual( rmdi, trop_icao_ht(1), tol_icao )
+
+    deallocate( temp_data, press_data, icao_data )
+
+  end subroutine test_candidate_rejected_above_heightcut
 
 end module tropopause_diags_kernel_mod_test
